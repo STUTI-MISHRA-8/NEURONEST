@@ -8,6 +8,7 @@ NeuroNest is a privacy-first, offline, AI-powered voice journaling application b
 
 **catch the demo here**
 https://drive.google.com/file/d/1U3BCKEz06mOel_k_WvY-YmSp6rxxE7s0/view?usp=sharing
+>>>please watch at 720p
 
 
 ---

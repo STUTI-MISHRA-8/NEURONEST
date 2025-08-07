@@ -14,7 +14,6 @@ import sqlite3
 import json 
 import requests
 
-# Config 
 SAMPLE_RATE = 44100; CHANNELS = 1; AUDIO_DIR = "recordings"
 MAX_RECORDING_MINUTES = 5; BLOCK_DURATION_SECONDS = 0.5
 WHISPER_MODEL_NAME = "base"; SENTIMENT_MODEL_NAME = "finiteautomata/bertweet-base-sentiment-analysis"
@@ -23,7 +22,6 @@ DB_NAME = "neuronest.db"
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL_NAME = "mistral" 
 
-#sesh state
 if 'is_recording' not in st.session_state: st.session_state.is_recording = False
 if 'current_filename' not in st.session_state: st.session_state.current_filename = None
 if 'start_time' not in st.session_state: st.session_state.start_time = None
@@ -50,8 +48,6 @@ if 'user_reflection_input' not in st.session_state: st.session_state.user_reflec
 if 'ai_feedback_on_reflection' not in st.session_state: st.session_state.ai_feedback_on_reflection = {}
 if '_week_init_done' not in st.session_state: st.session_state._week_init_done = False
 
-
-# load model
 def load_whisper_model_st():
     if st.session_state.whisper_model is None: 
         print(f"Loading Whisper: {WHISPER_MODEL_NAME} on CPU..."); 
@@ -78,7 +74,6 @@ def load_spacy_model_st():
         except Exception as e: print(f"Error spaCy: {e}"); st.session_state.spacy_nlp = "ERROR"; st.session_state.model_load_error_message = (st.session_state.get('model_load_error_message', "") + f" | spaCy: {e}").strip(" | ")
     return st.session_state.spacy_nlp
 
-# helper
 def get_next_filename(): now = datetime.datetime.now(); filename = now.strftime("%Y-%m-%d_%H-%M-%S") + ".wav"; return os.path.join(AUDIO_DIR, filename)
 def ensure_audio_dir_exists(): 
     if not os.path.exists(AUDIO_DIR): os.makedirs(AUDIO_DIR)
@@ -90,26 +85,42 @@ def get_week_start_options(num_weeks_to_show=12):
         options.append(monday_of_week)
     return {opt.strftime('%Y-%m-%d') + f" (Week of {opt.strftime('%b %d')})": opt for opt in sorted(options, reverse=True)}
 
-# Database fn 
 def init_db():
     conn = sqlite3.connect(DB_NAME); cursor = conn.cursor()
     cursor.execute("""CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, audio_filepath TEXT, transcription TEXT, sentiment TEXT, summary TEXT, tags TEXT, llm_insights TEXT)""")
     conn.commit(); conn.close(); print("Database initialized.")
 def add_entry_to_db(audio_filepath, transcription, sentiment, summary, tags_list, llm_insights_text):
     conn = None; 
-    try: conn = sqlite3.connect(DB_NAME); cursor = conn.cursor(); tags_json = json.dumps(tags_list if tags_list else []); cursor.execute("INSERT INTO entries (audio_filepath, transcription, sentiment, summary, tags, llm_insights) VALUES (?, ?, ?, ?, ?, ?)", (audio_filepath, transcription, sentiment, summary, tags_json, llm_insights_text)); conn.commit(); print(f"Entry added for: {os.path.basename(audio_filepath if audio_filepath else 'N/A')}")
-    except sqlite3.Error as e: print(f"DB error on insert: {e}"); st.error(f"Database Error: Could not save entry. {e}")
-    except Exception as ex: print(f"Unexpected error during DB add_entry: {ex}"); st.error(f"An unexpected error occurred while saving the entry: {ex}")
+    try: 
+        conn = sqlite3.connect(DB_NAME); cursor = conn.cursor(); tags_json = json.dumps(tags_list if tags_list else []); cursor.execute("INSERT INTO entries (audio_filepath, transcription, sentiment, summary, tags, llm_insights) VALUES (?, ?, ?, ?, ?, ?)", (audio_filepath, transcription, sentiment, summary, tags_json, llm_insights_text)); conn.commit(); print(f"Entry added for: {os.path.basename(audio_filepath if audio_filepath else 'N/A')}")
+    except sqlite3.Error as e: 
+        print(f"DB error on insert: {e}"); st.error(f"Database Error: Could not save entry. {e}")
+    except Exception as ex: 
+        print(f"Unexpected error during DB add_entry: {ex}"); st.error(f"An unexpected error occurred while saving the entry: {ex}")
     finally:
         if conn: conn.close()
 def get_all_entries(limit=50, sort_order="DESC", sentiment_filter=None, search_term=None):
-    conn = sqlite3.connect(DB_NAME); conn.row_factory = sqlite3.Row; cursor = conn.cursor(); query_parts = ["SELECT id, timestamp, audio_filepath, transcription, sentiment, summary, tags, llm_insights FROM entries"]; params = []; where_clauses = []
-    if sentiment_filter: placeholders = ','.join('?' for _ in sentiment_filter); where_clauses.append(f"sentiment IN ({placeholders})"); params.extend(sentiment_filter)
-    if search_term: where_clauses.append("(transcription LIKE ? OR summary LIKE ? OR tags LIKE ? OR llm_insights LIKE ?)"); params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    query_parts = ["SELECT id, timestamp, audio_filepath, transcription, sentiment, summary, tags, llm_insights FROM entries"]
+    params = []
+    where_clauses = []
+    if sentiment_filter:
+        placeholders = ','.join('?' for _ in sentiment_filter)
+        where_clauses.append(f"sentiment IN ({placeholders})")
+        params.extend(sentiment_filter)
+    if search_term:
+        where_clauses.append("(transcription LIKE ? OR summary LIKE ? OR tags LIKE ? OR llm_insights LIKE ?)")
+        params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
     if where_clauses: query_parts.append("WHERE " + " AND ".join(where_clauses))
-    query_parts.append(f"ORDER BY timestamp {sort_order} LIMIT ?"); params.append(limit); final_query = " ".join(query_parts)
-    try: cursor.execute(final_query, tuple(params)); entries = cursor.fetchall()
-    except sqlite3.Error as e: print(f"DB query error: {e}"); st.error(f"Database query error: {e}"); entries = []
+    query_parts.append(f"ORDER BY timestamp {sort_order} LIMIT ?"); params.append(limit)
+    final_query = " ".join(query_parts)
+    try:
+        cursor.execute(final_query, tuple(params))
+        entries = cursor.fetchall()
+    except sqlite3.Error as e:
+        print(f"DB query error: {e}"); st.error(f"Database query error: {e}"); entries = []
     finally: conn.close()
     return entries
 def get_entries_for_week_range(week_start_date_obj):
@@ -121,23 +132,19 @@ def get_entries_for_week_range(week_start_date_obj):
     finally: conn.close()
     print(f"DB: Fetched {len(entries)} entries for week starting {week_start_date_obj}"); return entries
 
-#  initializers 
 ensure_audio_dir_exists(); init_db()
 load_whisper_model_st(); load_sentiment_analyzer_st(); load_summarizer_st(); load_spacy_model_st()
 
-#  AI Processing Functions 
 def transcribe_audio_file(audio_path):
     model = load_whisper_model_st(); 
     if model is None or model == "ERROR": return None, "Transcription failed: Whisper model error."
     try: segments, _ = model.transcribe(audio_path, beam_size=5); return "".join(segment.text + " " for segment in segments).strip(), None
     except Exception as e: return None, f"Error during transcription: {e}"
 
-def analyze_sentiment_text(text_to_analyze): # <--- CORRECTED
+def analyze_sentiment_text(text_to_analyze):
     analyzer = load_sentiment_analyzer_st()
-    if analyzer is None or analyzer == "ERROR": 
-        return None, "Sentiment analysis failed: Model error."
-    if not text_to_analyze or not text_to_analyze.strip(): 
-        return "Neutral", None
+    if analyzer is None or analyzer == "ERROR": return None, "Sentiment analysis failed: Model error."
+    if not text_to_analyze or not text_to_analyze.strip(): return "Neutral", None
     try:
         result = analyzer(text_to_analyze)
         if result and isinstance(result, list) and len(result) > 0:
@@ -159,12 +166,14 @@ def summarize_text(text_to_summarize, min_length=20, max_length=100):
         if summary_result and isinstance(summary_result, list) and len(summary_result) > 0: return summary_result[0]['summary_text'].strip(), None
         else: return None, f"Unexpected summarization result: {summary_result}"
     except Exception as e: return None, f"Error during summarization: {e}"
+
 def extract_tags_spacy(text_to_tag, num_tags=7):
     nlp = load_spacy_model_st()
     if nlp is None or nlp == "ERROR": return [], "Tag extraction failed: spaCy model error."
     if not text_to_tag or not text_to_tag.strip(): return [], None
     try: doc = nlp(text_to_tag); tags = [chunk.text.lower() for chunk in doc.noun_chunks]; unique_tags = sorted(list(set(tags)), key=tags.index); selected_tags = unique_tags[:num_tags]; return selected_tags, None
     except Exception as e: return [], f"Error during tag extraction: {e}"
+
 def get_llm_analysis_and_suggestions(text_input, student_context=""):
     st.session_state.ollama_connection_error = False 
     prompt_template = f"""You are NeuroNest, an AI academic support companion. Your purpose is to help students reflect on their study habits, mindset, and challenges, and to offer encouraging, Socratic, and strategy-oriented suggestions. You are NOT a therapist or a definitive problem-solver. Your tone should be empathetic, understanding, and empowering. Avoid giving direct commands; instead, offer possibilities and questions for self-reflection. Do not generate a preamble or conversational fluff before your response; directly provide the reflection and suggestions.
@@ -205,6 +214,7 @@ IMPORTANT SAFETY GUIDELINE: If the entry mentions explicit suicidal ideation, se
     except requests.exceptions.Timeout: print("DEBUG_OLLAMA: Timeout"); return None, "Ollama request timed out. Consider reducing 'num_predict' or checking Ollama/model performance."
     except requests.exceptions.HTTPError as e: print(f"DEBUG_OLLAMA: HTTPError - {e.response.text}"); return None, f"Ollama API error: {e.response.status_code}. Details: {e.response.text[:200]}"
     except Exception as e: print(f"DEBUG_OLLAMA: Generic Exception - {e}"); return None, f"Unexpected error with Ollama: {str(e)}"
+
 def get_ai_feedback_on_user_reflection(original_transcription, original_llm_reflection, user_response):
     if not user_response.strip(): return "It looks like you haven't written a reflection yet."
     prompt = f"""You are NeuroNest, an AI companion. A user previously made a journal entry, received an initial AI reflection, and has now written their own thoughts in response.
@@ -231,10 +241,10 @@ IMPORTANT SAFETY GUIDELINE: If the user's current response mentions explicit sui
     if error: return f"Sorry, I had trouble processing your reflection feedback right now: {error}"
     return llm_feedback if llm_feedback else "Thanks for sharing your thoughts!"
 
-#  Audio Recording Thread Functions 
 def audio_callback_st(indata, frames, time_info, status, queue_instance):
     if status: print(f"DEBUG_CALLBACK: PortAudio Status: {status}", flush=True)
     if indata.size > 0: queue_instance.put(indata.copy())
+
 def start_recording_thread_logic_st():
     print("DEBUG_THREAD: start_recording_thread_logic_st called.", flush=True)
     st.session_state.stop_event = threading.Event(); st.session_state.audio_queue = Queue()
@@ -256,7 +266,6 @@ def start_recording_thread_logic_st():
     if hasattr(st.session_state, 'recording_thread_obj') and st.session_state.recording_thread_obj and st.session_state.recording_thread_obj.is_alive(): print("DEBUG_THREAD: Recording thread started and is alive.", flush=True)
     else: print("DEBUG_THREAD: WARNING - Recording thread NOT alive shortly after start.", flush=True)
 
-# Main Processing Logic 
 def process_entry_pipeline():
     print("DEBUG_MAIN_PROCESS: Full entry processing pipeline called.", flush=True)
     thread_to_stop = st.session_state.get('recording_thread_obj'); event_to_set = st.session_state.get('stop_event'); queue_to_drain = st.session_state.get('audio_queue')
@@ -298,7 +307,6 @@ def process_entry_pipeline():
     if 'stop_event' in st.session_state: del st.session_state.stop_event
     if 'audio_queue' in st.session_state: del st.session_state.audio_queue
 
-# Streamlit's code 
 st.set_page_config(layout="wide", page_title="NeuroNest")
 st.title("🧠 NeuroNest"); st.markdown("> *“Unclutter your mind, quietly.”*")
 if not st.session_state.disclaimer_shown:
@@ -384,12 +392,9 @@ else:
                 except json.JSONDecodeError: st.caption(entry['tags'] or "Tags not in expected format.")
             if entry['llm_insights']: st.markdown("---"); st.markdown("##### NeuroNest's Reflection:"); st.markdown(entry['llm_insights'])
 
-# Weekly Journal Review Section 
 st.markdown("---")
 st.header("📖 Weekly Journal Review")
-
 week_options_dict = get_week_start_options()
-
 def week_selection_changed():
     selected_week_str_cb = st.session_state.journal_week_selector_key 
     if selected_week_str_cb and selected_week_str_cb in week_options_dict: 
@@ -403,7 +408,6 @@ def week_selection_changed():
     else: 
         st.session_state.current_journal_week_entries = []
         st.session_state.current_journal_page_index = 0
-
 selected_week_str_ui = st.selectbox(
     "Select a week to review:",
     options=list(week_options_dict.keys()),
@@ -411,22 +415,18 @@ selected_week_str_ui = st.selectbox(
     index=0 if not st.session_state.selected_journal_week_start_str and week_options_dict else list(week_options_dict.keys()).index(st.session_state.selected_journal_week_start_str) if st.session_state.selected_journal_week_start_str in week_options_dict else 0,
     on_change=week_selection_changed 
 )
-
 if not st.session_state.current_journal_week_entries and selected_week_str_ui :
     if st.session_state.selected_journal_week_start_str != selected_week_str_ui or not st.session_state._week_init_done : 
          st.session_state.selected_journal_week_start_str = selected_week_str_ui
          week_selection_changed()
          st.session_state._week_init_done = True
-
 if st.session_state.current_journal_week_entries:
     entries_for_week = st.session_state.current_journal_week_entries
     num_pages = len(entries_for_week)
     current_page_idx = st.session_state.current_journal_page_index
-
     if 0 <= current_page_idx < num_pages:
         current_entry = entries_for_week[current_page_idx]
         entry_id = current_entry['id']
-        
         st.markdown(f"### Reviewing Entry from: {datetime.datetime.strptime(current_entry['timestamp'].split('.')[0], '%Y-%m-%d %H:%M:%S').strftime('%A, %b %d, %Y - %I:%M %p')}")
         with st.container(border=True):
             st.markdown("**Original Thoughts (Transcription):**"); st.caption(current_entry['transcription'] or "No transcription.")
